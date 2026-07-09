@@ -16,7 +16,11 @@
 #include <optional>
 #include <vector>
 #include "nv_attach_impl.hpp"
+#include "nv_attach_launch_trace.hpp"
 #include <stdexcept>
+#include <execinfo.h>
+#include <cxxabi.h>
+#include <chrono>
 using namespace bpftime;
 using namespace attach;
 
@@ -87,6 +91,26 @@ static bool cuda_graph_stream_is_capturing(cudaStream_t stream)
 		return false;
 	}
 	return status != cudaStreamCaptureStatusNone;
+}
+
+// Walk the call stack to find the PyTorch operator that triggered
+// cudaLaunchKernel. Returns mangled name like "_ZN2at6native8matmul_out..."
+static std::string resolve_pytorch_caller_from_backtrace()
+{
+	void *frames[32];
+	int n = backtrace(frames, 32);
+	for (int i = 0; i < n; i++) {
+		Dl_info info;
+		if (dladdr(frames[i], &info) == 0 || info.dli_sname == nullptr)
+			continue;
+		std::string name(info.dli_sname);
+		// Look for PyTorch native functions
+		if (name.find("at::native::") != std::string::npos ||
+		    name.find("at::cuda::") != std::string::npos) {
+			return name;
+		}
+	}
+	return "";
 }
 
 static cudaError_t
@@ -162,11 +186,53 @@ cuda_launch_kernel_common(nv_attach_impl *impl, void *original_fn_ptr,
 			local_bytes, shared_bytes, const_bytes, regs, max_tpb);
 	};
 
+	// Write launch trace: op_name → kernel_name association
+	{
+		pytorch_kernel_launch_record rec;
+		rec.timestamp_ns =
+			std::chrono::duration_cast<std::chrono::nanoseconds>(
+				std::chrono::steady_clock::now()
+					.time_since_epoch())
+				.count();
+		rec.op_name = resolve_pytorch_caller_from_backtrace();
+		if (auto name = impl->resolve_host_function_symbol(
+				    (void *)func)) {
+			rec.kernel_name = *name;
+		}
+		rec.grid_x = grid_dim.x;
+		rec.grid_y = grid_dim.y;
+		rec.grid_z = grid_dim.z;
+		rec.block_x = block_dim.x;
+		rec.block_y = block_dim.y;
+		rec.block_z = block_dim.z;
+		rec.stream = (uint64_t)(uintptr_t)stream;
+
+		// Write to cross-process shared memory before the move
+		struct gpu_launch_trace_record trace_rec;
+		memset(&trace_rec, 0, sizeof(trace_rec));
+		trace_rec.timestamp_ns = rec.timestamp_ns;
+		trace_rec.grid_x = rec.grid_x;
+		trace_rec.grid_y = rec.grid_y;
+		trace_rec.grid_z = rec.grid_z;
+		trace_rec.block_x = rec.block_x;
+		trace_rec.block_y = rec.block_y;
+		trace_rec.block_z = rec.block_z;
+		trace_rec.stream = rec.stream;
+		strncpy(trace_rec.op_name, rec.op_name.c_str(),
+			sizeof(trace_rec.op_name) - 1);
+		strncpy(trace_rec.kernel_name, rec.kernel_name.c_str(),
+			sizeof(trace_rec.kernel_name) - 1);
+		gpu_launch_trace_write(&trace_rec);
+
+		impl->add_launch_record(std::move(rec));
+	}
+
 	if (auto itr1 = impl->symbol_address_to_fatbin.find((void *)func);
 	    itr1 != impl->symbol_address_to_fatbin.end()) {
 		const auto &fatbin = *itr1->second;
 		const auto &handle =
 			fatbin.function_addr_to_symbol.at((void *)func);
+
 		SPDLOG_DEBUG("Launching kernel..");
 		if (auto err = cuLaunchKernel(
 			    handle.func, grid_dim.x, grid_dim.y, grid_dim.z,

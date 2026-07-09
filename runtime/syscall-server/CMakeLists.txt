@@ -33,6 +33,13 @@ target_link_libraries(bpftime-syscall-server PUBLIC
 
 add_dependencies(bpftime-syscall-server spdlog::spdlog)
 
+if(${BPFTIME_ENABLE_CUDA_ATTACH})
+target_include_directories(bpftime-syscall-server
+    PUBLIC
+    ${NV_ATTACH_IMPL_INCLUDE}
+)
+endif()
+
 if(${BPFTIME_BUILD_WITH_LIBBPF})
 
 target_include_directories(bpftime-syscall-server

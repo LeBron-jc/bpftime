@@ -1961,5 +1961,22 @@ void nv_attach_impl::start_late_bootstrap_async()
 						   std::memory_order_release);
 	}
 }
+void nv_attach_impl::add_launch_record(pytorch_kernel_launch_record &&rec)
+{
+	std::lock_guard<std::mutex> lock(launch_record_mutex);
+	launch_records.emplace_back(std::move(rec));
+	if (launch_records.size() > 10000) {
+		launch_records.erase(launch_records.begin());
+	}
+}
+
+std::vector<pytorch_kernel_launch_record>
+nv_attach_impl::get_and_clear_launch_records()
+{
+	std::lock_guard<std::mutex> lock(launch_record_mutex);
+	std::vector<pytorch_kernel_launch_record> result;
+	result.swap(launch_records);
+	return result;
+}
 
 } // namespace bpftime::attach

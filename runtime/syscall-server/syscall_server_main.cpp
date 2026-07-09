@@ -266,11 +266,20 @@ extern "C" long syscall(long sysno, ...)
 #endif
 
 #if defined(BPFTIME_ENABLE_CUDA_ATTACH)
+#include "nv_attach_launch_trace.hpp"
+
 extern "C" int bpftime_syscall_server__poll_gpu_ringbuf_map(
 	int mapfd, void *ctx, void (*fn)(const void *, uint64_t, void *))
 {
 	return handle_exceptions([&]() {
 		return context->poll_gpu_ringbuf_map(mapfd, ctx, fn);
 	});
+}
+
+extern "C" int bpftime_syscall_server__get_gpu_launch_records(
+	struct gpu_launch_trace_record *out_records, int max_count,
+	uint64_t *last_read_pos)
+{
+	return gpu_launch_trace_read(out_records, max_count, last_read_pos);
 }
 #endif

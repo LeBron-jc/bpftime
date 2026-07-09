@@ -70,6 +70,16 @@ struct CUDARuntimeFunctionHookerContext {
 	AttachedToFunction to_function;
 };
 
+// Records PyTorch operator → CUDA kernel launch association
+struct pytorch_kernel_launch_record {
+	uint64_t timestamp_ns;
+	std::string op_name;       // e.g. "at::native::matmul_out"
+	std::string kernel_name;   // e.g. "gemmStridedBatched"
+	uint32_t grid_x, grid_y, grid_z;
+	uint32_t block_x, block_y, block_z;
+	uint64_t stream;
+};
+
 struct nv_attach_entry {
 	std::vector<ebpf_inst> instuctions;
 	// Kernels to be patched for this attach entry
@@ -278,6 +288,15 @@ class nv_attach_impl final : public base_attach_impl {
 
 		mutable std::mutex launch_event_mutex;
 		std::unordered_map<CUstream, CUevent> pending_launch_events_by_stream;
+
+		// PyTorch operator → CUDA kernel name association
+		mutable std::mutex launch_record_mutex;
+		std::vector<pytorch_kernel_launch_record> launch_records;
+
+	    public:
+		void add_launch_record(pytorch_kernel_launch_record &&rec);
+		std::vector<pytorch_kernel_launch_record>
+		get_and_clear_launch_records();
 	};
 
 std::string add_semicolon_for_variable_lines(std::string input);
