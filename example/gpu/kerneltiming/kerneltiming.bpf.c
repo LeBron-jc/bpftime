@@ -80,6 +80,27 @@ int cuda__mul_add_exit()
 	return 0;
 }
 
+// ── relu kernel ──
+SEC("kprobe/_Z4reluPf")
+int cuda__relu_enter()
+{
+	u64 bx, by, bz, tx, ty, tz;
+	bpf_get_block_idx(&bx, &by, &bz);
+	bpf_get_thread_idx(&tx, &ty, &tz);
+	push_event(0, "relu", bx, by, bz, tx, ty, tz, bpf_get_globaltimer());
+	return 0;
+}
+
+SEC("kretprobe/_Z4reluPf")
+int cuda__relu_exit()
+{
+	u64 bx, by, bz, tx, ty, tz;
+	bpf_get_block_idx(&bx, &by, &bz);
+	bpf_get_thread_idx(&tx, &ty, &tz);
+	push_event(1, "relu", bx, by, bz, tx, ty, tz, bpf_get_globaltimer());
+	return 0;
+}
+
 // ── EXAMPLE: PyTorch kernel hooks (uncomment when torch is ready) ──
 // To find kernel names: run torch test with bpftime agent,
 // then check launch trace for kernel_name entries.

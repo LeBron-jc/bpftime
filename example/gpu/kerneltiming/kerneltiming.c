@@ -73,8 +73,9 @@ static void demangle(const char *mangled, char *out, int outsz)
 #define MAX_KERN 32
 #define MAX_DURATIONS 32
 struct kern_stats {
-	char name[128];
-	char op_name[128];
+	char key[256];          // "op|kern" for lookup
+	char op_name[128];      // display operator name
+	char kern_name[128];    // display kernel name
 	uint64_t total_duration;
 	uint64_t min_duration;
 	uint64_t max_duration;
@@ -89,16 +90,21 @@ struct kern_stats {
 static struct kern_stats kstats[MAX_KERN];
 static int nkern = 0;
 
-static struct kern_stats *get_kern(const char *name)
+static struct kern_stats *get_kern(const char *op_name, const char *kern_name)
 {
+	char key[256];
+	snprintf(key, sizeof(key), "%s|%s", op_name, kern_name);
 	for (int i = 0; i < nkern; i++)
-		if (strcmp(kstats[i].name, name) == 0)
+		if (strcmp(kstats[i].key, key) == 0)
 			return &kstats[i];
 	if (nkern >= MAX_KERN)
 		return NULL;
 	struct kern_stats *k = &kstats[nkern++];
 	memset(k, 0, sizeof(*k));
-	strncpy(k->name, name, sizeof(k->name) - 1);
+	strncpy(k->key, key, sizeof(k->key) - 1);
+	strncpy(k->kern_name, kern_name, sizeof(k->kern_name) - 1);
+	if (op_name[0])
+		strncpy(k->op_name, op_name, sizeof(k->op_name) - 1);
 	k->min_duration = UINT64_MAX;
 	return k;
 }
@@ -129,16 +135,17 @@ static void poll_launch_traces(void)
 	for (int i = 0; i < n; i++) {
 		char dname[128];
 		demangle(launch_records[i].kernel_name, dname, sizeof(dname));
-		struct kern_stats *k = get_kern(dname);
+		char op[128] = "";
+		if (launch_records[i].op_name[0] != '\0') {
+			strncpy(op, launch_records[i].op_name, sizeof(op) - 1);
+			char *p = strstr(op, "()");
+			if (p) *p = '\0';
+		}
+		struct kern_stats *k = get_kern(op, dname);
 		if (!k)
 			continue;
-		if (launch_records[i].op_name[0] != '\0') {
-			strncpy(k->op_name, launch_records[i].op_name,
-				sizeof(k->op_name) - 1);
-			char *p = strstr(k->op_name, "()");
-			if (p)
-				*p = '\0';
-		}
+		if (op[0] != '\0')
+			strncpy(k->op_name, op, sizeof(k->op_name) - 1);
 		if (!k->have_launch &&
 		    (launch_records[i].grid_x > 0 ||
 		     launch_records[i].block_x > 0)) {
@@ -190,7 +197,17 @@ static void poll_callback(const void *data, uint64_t size, void *ctx)
 			(*total)++;
 			if (!(e->tid_x % 32 == 0))
 				return;
-			struct kern_stats *k = get_kern(enter_map[h].kern_name);
+			struct kern_stats *k = NULL;
+			for (int j = 0; j < nkern; j++) {
+				if (strcmp(kstats[j].kern_name,
+					   enter_map[h].kern_name) == 0) {
+					k = &kstats[j];
+					break;
+				}
+			}
+			if (!k && nkern < MAX_KERN) {
+				k = get_kern("", enter_map[h].kern_name);
+			}
 			if (k) {
 				k->total_duration += duration;
 				if (k->count < MAX_DURATIONS)
@@ -218,7 +235,7 @@ static void print_frame(uint64_t total)
 
 	for (int i = 0; i < nkern; i++) {
 		struct kern_stats *k = &kstats[i];
-		if (k->count == 0 || k->name[0] == '\0')
+		if (k->count == 0 || k->kern_name[0] == '\0')
 			continue;
 		int n = k->count < MAX_DURATIONS ? k->count : MAX_DURATIONS;
 		memcpy(k->sorted, k->durations, n * sizeof(uint64_t));
@@ -230,12 +247,12 @@ static void print_frame(uint64_t total)
 
 		if (k->op_name[0] != '\0')
 			printf("==== %s -> %s <<<(%u,%u,%u),(%u,%u,%u)>>> ====\n",
-			       k->op_name, k->name,
+			       k->op_name, k->kern_name,
 			       k->grid_x, k->grid_y, k->grid_z,
 			       k->block_x, k->block_y, k->block_z);
 		else
 			printf("==== %s <<<(%u,%u,%u),(%u,%u,%u)>>> ====\n",
-			       k->name,
+			       k->kern_name,
 			       k->grid_x, k->grid_y, k->grid_z,
 			       k->block_x, k->block_y, k->block_z);
 		printf("  warps=%d  p50=%.1fms  p90=%.1fms  p99=%.1fms  max=%.1fms\n",
