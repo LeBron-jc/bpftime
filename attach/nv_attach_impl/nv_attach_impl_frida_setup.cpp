@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cxxabi.h>
 #include <dlfcn.h>
 #include <frida-gum.h>
 #include <iterator>
@@ -94,7 +95,7 @@ static bool cuda_graph_stream_is_capturing(cudaStream_t stream)
 }
 
 // Walk the call stack to find the PyTorch operator that triggered
-// cudaLaunchKernel. Returns mangled name like "_ZN2at6native8matmul_out..."
+// cudaLaunchKernel. Returns demangled name like "at::native::matmul_out"
 static std::string resolve_pytorch_caller_from_backtrace()
 {
 	void *frames[32];
@@ -103,8 +104,14 @@ static std::string resolve_pytorch_caller_from_backtrace()
 		Dl_info info;
 		if (dladdr(frames[i], &info) == 0 || info.dli_sname == nullptr)
 			continue;
-		std::string name(info.dli_sname);
-		// Look for PyTorch native functions
+		int status;
+		char *demangled =
+			abi::__cxa_demangle(info.dli_sname, nullptr, nullptr,
+					    &status);
+		if (status != 0 || demangled == nullptr)
+			continue;
+		std::string name(demangled);
+		free(demangled);
 		if (name.find("at::native::") != std::string::npos ||
 		    name.find("at::cuda::") != std::string::npos) {
 			return name;

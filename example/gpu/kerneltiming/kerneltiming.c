@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string.h>
 #include "./.output/kerneltiming.skel.h"
 #include <inttypes.h>
 #define warn(...) fprintf(stderr, __VA_ARGS__)
@@ -70,11 +71,15 @@ static void demangle(const char *mangled, char *out, int outsz)
 
 // Per-kernel aggregate stats
 #define MAX_KERN 32
+#define MAX_DURATIONS 32
 struct kern_stats {
 	char name[128];
+	char op_name[128];
 	uint64_t total_duration;
 	uint64_t min_duration;
 	uint64_t max_duration;
+	uint64_t durations[MAX_DURATIONS];
+	uint64_t sorted[MAX_DURATIONS];
 	int count;
 	int have_launch;
 	uint32_t grid_x, grid_y, grid_z;
@@ -106,6 +111,7 @@ static void reset_kstats(void)
 		kstats[i].max_duration = 0;
 		kstats[i].count = 0;
 		kstats[i].have_launch = 0;
+		kstats[i].op_name[0] = '\0';
 	}
 	nkern = 0;
 }
@@ -124,7 +130,16 @@ static void poll_launch_traces(void)
 		char dname[128];
 		demangle(launch_records[i].kernel_name, dname, sizeof(dname));
 		struct kern_stats *k = get_kern(dname);
-		if (k && !k->have_launch &&
+		if (!k)
+			continue;
+		if (launch_records[i].op_name[0] != '\0') {
+			strncpy(k->op_name, launch_records[i].op_name,
+				sizeof(k->op_name) - 1);
+			char *p = strstr(k->op_name, "()");
+			if (p)
+				*p = '\0';
+		}
+		if (!k->have_launch &&
 		    (launch_records[i].grid_x > 0 ||
 		     launch_records[i].block_x > 0)) {
 			k->grid_x = launch_records[i].grid_x;
@@ -177,8 +192,10 @@ static void poll_callback(const void *data, uint64_t size, void *ctx)
 				return;
 			struct kern_stats *k = get_kern(enter_map[h].kern_name);
 			if (k) {
-				k->count++;
 				k->total_duration += duration;
+				if (k->count < MAX_DURATIONS)
+					k->durations[k->count] = duration;
+				k->count++;
 				if (duration < k->min_duration)
 					k->min_duration = duration;
 				if (duration > k->max_duration)
@@ -188,6 +205,12 @@ static void poll_callback(const void *data, uint64_t size, void *ctx)
 	}
 }
 
+static int cmp_u64(const void *a, const void *b)
+{
+	uint64_t va = *(const uint64_t *)a, vb = *(const uint64_t *)b;
+	return va < vb ? -1 : va > vb ? 1 : 0;
+}
+
 static void print_frame(uint64_t total)
 {
 	if (nkern == 0 && total == 0)
@@ -195,17 +218,44 @@ static void print_frame(uint64_t total)
 
 	for (int i = 0; i < nkern; i++) {
 		struct kern_stats *k = &kstats[i];
-		if (k->count == 0)
+		if (k->count == 0 || k->name[0] == '\0')
 			continue;
-		printf("==== %s <<<(%u,%u,%u),(%u,%u,%u)>>> ====\n",
-		       k->name,
-		       k->grid_x, k->grid_y, k->grid_z,
-		       k->block_x, k->block_y, k->block_z);
-		printf("  count=%d  avg=%.0f ns  min=%lu ns  max=%lu ns\n",
-		       k->count,
-		       k->count ? (double)k->total_duration / k->count : 0,
-		       (unsigned long)k->min_duration,
-		       (unsigned long)k->max_duration);
+		int n = k->count < MAX_DURATIONS ? k->count : MAX_DURATIONS;
+		memcpy(k->sorted, k->durations, n * sizeof(uint64_t));
+		qsort(k->sorted, n, sizeof(uint64_t), cmp_u64);
+
+		uint64_t p50 = k->sorted[n * 50 / 100];
+		uint64_t p90 = k->sorted[n * 90 / 100];
+		uint64_t p99 = k->sorted[n * 99 / 100];
+
+		if (k->op_name[0] != '\0')
+			printf("==== %s -> %s <<<(%u,%u,%u),(%u,%u,%u)>>> ====\n",
+			       k->op_name, k->name,
+			       k->grid_x, k->grid_y, k->grid_z,
+			       k->block_x, k->block_y, k->block_z);
+		else
+			printf("==== %s <<<(%u,%u,%u),(%u,%u,%u)>>> ====\n",
+			       k->name,
+			       k->grid_x, k->grid_y, k->grid_z,
+			       k->block_x, k->block_y, k->block_z);
+		printf("  warps=%d  p50=%.1fms  p90=%.1fms  p99=%.1fms  max=%.1fms\n",
+		       n,
+		       (double)p50 / 1e6, (double)p90 / 1e6,
+		       (double)p99 / 1e6, (double)k->max_duration / 1e6);
+
+		// Unsorted warp duration bar (original arrival order)
+		printf("  ");
+		uint64_t w = k->max_duration - k->min_duration;
+		if (w == 0) w = 1;
+		for (int j = 0; j < n; j++) {
+			int bar = (int)((k->durations[j] - k->min_duration) * 8 / w);
+			if (bar < 0) bar = 0;
+			if (bar > 8) bar = 8;
+			printf("%c", ".:-=+*#%@"[bar]);
+		}
+		printf(" %.1f..%.1fms\n",
+		       (double)k->min_duration / 1e6,
+		       (double)k->max_duration / 1e6);
 	}
 	if (total > 0)
 		printf("-- total events: %lu --\n\n", total);

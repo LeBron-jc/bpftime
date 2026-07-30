@@ -34,13 +34,12 @@ push_event(u64 type, const char *name, u64 bx, u64 by, u64 bz,
 	e.bid_x = bx; e.bid_y = by; e.bid_z = bz;
 	e.tid_x = tx; e.tid_y = ty; e.tid_z = tz;
 	e.timestamp = ts;
-
 	for (int i = 0; i < KERN_NAME_LEN - 1 && name[i]; i++)
 		e.kern_name[i] = name[i];
-
 	bpf_perf_event_output(NULL, &rb, 0, &e, sizeof(e));
 }
 
+// ── DEMO hooks (vec_add kernels) ──
 SEC("kprobe/_Z9vectorAddPKfS0_Pf")
 int cuda__vec_add_enter()
 {
@@ -80,5 +79,17 @@ int cuda__mul_add_exit()
 	push_event(1, "multiplyAdd", bx, by, bz, tx, ty, tz, bpf_get_globaltimer());
 	return 0;
 }
+
+// ── EXAMPLE: PyTorch kernel hooks (uncomment when torch is ready) ──
+// To find kernel names: run torch test with bpftime agent,
+// then check launch trace for kernel_name entries.
+
+// torch.mm() on Ampere → cuBLAS sgemm kernel:
+// SEC("kprobe/_ZN10cutlass_gemm...")
+// int torch_mm_enter() { ... }
+
+// torch.relu() kernel:
+// SEC("kprobe/_ZN2at6native...")
+// int torch_relu_enter() { ... }
 
 char LICENSE[] SEC("license") = "GPL";

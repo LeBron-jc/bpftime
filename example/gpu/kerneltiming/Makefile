@@ -45,7 +45,7 @@ $(call allow-override,CC,$(CROSS_COMPILE)cc)
 $(call allow-override,LD,$(CROSS_COMPILE)ld)
 
 .PHONY: all
-all: $(APPS) vec_add
+all: $(APPS) vec_add torch_ops
 
 vec_add: vec_add.cu
 	@if command -v nvcc >/dev/null 2>&1; then \
@@ -54,10 +54,17 @@ vec_add: vec_add.cu
 		echo "Warning: CUDA not found, skipping vec_add build"; \
 	fi
 
+torch_ops: torch_ops.cu
+	@if command -v nvcc >/dev/null 2>&1; then \
+		nvcc -Xcompiler -rdynamic -cudart shared torch_ops.cu -o torch_ops -g; \
+	else \
+		echo "Warning: CUDA not found, skipping torch_ops build"; \
+	fi
+
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT) $(APPS) vec_add
+	$(Q)rm -rf $(OUTPUT) $(APPS) vec_add torch_ops
 
 $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT):
 	$(call msg,MKDIR,$@)
