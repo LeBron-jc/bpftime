@@ -56,17 +56,14 @@ nv_gpu_ringbuf_map_impl::try_initialize_for_agent_and_get_mapped_address()
 int nv_gpu_ringbuf_map_impl::drain_data(
 	const std::function<void(const void *, uint64_t)> &fn)
 {
-	// Memory barrier: ensure we see latest GPU writes before reading header
 	std::atomic_thread_fence(std::memory_order_acquire);
 	for (uint64_t i = 0; i < thread_count; i++) {
 		auto header = (ringbuf_header *)(uintptr_t)(data_buffer.data() +
 							    i * entry_size);
-		if (header->dirty) {
-			SPDLOG_WARN("Ignored dirty pages");
-			return 0;
-		}
-		if (header->head != header->tail) {
-			// Got data!
+		if (header->dirty)
+			continue;
+		// drain all available entries from this thread
+		while (header->head != header->tail) {
 			auto real_head = header->head % max_entries;
 			__atomic_fetch_add(&header->head, 1, __ATOMIC_SEQ_CST);
 			auto buffer_start =
