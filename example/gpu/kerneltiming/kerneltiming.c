@@ -72,6 +72,7 @@ static void demangle(const char *mangled, char *out, int outsz)
 // Per-kernel aggregate stats
 #define MAX_KERN 32
 #define MAX_DURATIONS 32
+#define MAX_BLOCKS 8
 struct kern_stats {
 	char key[256];          // "op|kern" for lookup
 	char op_name[128];      // display operator name
@@ -85,6 +86,11 @@ struct kern_stats {
 	int have_launch;
 	uint32_t grid_x, grid_y, grid_z;
 	uint32_t block_x, block_y, block_z;
+	// block scheduling: per-block first enter timestamp
+	uint64_t block_enter[MAX_BLOCKS];
+	int n_blocks;
+	// per-warp exec count
+	int exec_counts[MAX_DURATIONS];
 };
 
 static struct kern_stats kstats[MAX_KERN];
@@ -118,6 +124,9 @@ static void reset_kstats(void)
 		kstats[i].count = 0;
 		kstats[i].have_launch = 0;
 		kstats[i].op_name[0] = '\0';
+		kstats[i].n_blocks = 0;
+		memset(kstats[i].block_enter, 0, sizeof(kstats[i].block_enter));
+		memset(kstats[i].exec_counts, 0, sizeof(kstats[i].exec_counts));
 	}
 	nkern = 0;
 }
@@ -187,6 +196,21 @@ static void poll_callback(const void *data, uint64_t size, void *ctx)
 		enter_map[h].ts = e->timestamp;
 		enter_map[h].used = 1;
 		strncpy(enter_map[h].kern_name, e->kern_name, KERN_NAME_LEN - 1);
+		// track block scheduling (minimum enter timestamp per block)
+		for (int j = 0; j < nkern; j++) {
+			if (strcmp(kstats[j].kern_name, e->kern_name) != 0)
+				continue;
+			int bid = (int)e->bid_x;
+			if (bid < MAX_BLOCKS) {
+				uint64_t ts = e->timestamp;
+				if (kstats[j].block_enter[bid] == 0 ||
+				    ts < kstats[j].block_enter[bid])
+					kstats[j].block_enter[bid] = ts;
+				if (bid + 1 > kstats[j].n_blocks)
+					kstats[j].n_blocks = bid + 1;
+			}
+			break;
+		}
 	} else {
 		uint32_t h = hash_key(e->bid_x, e->tid_x);
 		if (enter_map[h].used &&
@@ -212,6 +236,9 @@ static void poll_callback(const void *data, uint64_t size, void *ctx)
 				k->total_duration += duration;
 				if (k->count < MAX_DURATIONS)
 					k->durations[k->count] = duration;
+				int warp = (int)e->tid_x / 32;
+				if (warp >= 0 && warp < MAX_DURATIONS)
+					k->exec_counts[warp]++;
 				k->count++;
 				if (duration < k->min_duration)
 					k->min_duration = duration;
@@ -273,6 +300,37 @@ static void print_frame(uint64_t total)
 		printf(" %.1f..%.1fms\n",
 		       (double)k->min_duration / 1e6,
 		       (double)k->max_duration / 1e6);
+
+		// block scheduling order (relative to first block)
+		if (k->n_blocks > 0 && k->block_enter[0] > 0) {
+			printf("  blk_order: ");
+			uint64_t base = k->block_enter[0];
+			for (int j = 0; j < k->n_blocks && j < MAX_BLOCKS; j++) {
+				if (k->block_enter[j] == 0) continue;
+				printf("b%d@+%.0fus ", j,
+				       (double)(k->block_enter[j] - base) / 1000.0);
+			}
+			printf("\n");
+		}
+
+		// per-warp exec count (min/max to show load imbalance)
+		{
+			int e_min = 999999, e_max = 0, e_total = 0, e_n = 0;
+			for (int j = 0; j < MAX_DURATIONS; j++) {
+				int ec = k->exec_counts[j];
+				if (ec > 0) {
+					if (ec < e_min) e_min = ec;
+					if (ec > e_max) e_max = ec;
+					e_total += ec;
+					e_n++;
+				}
+			}
+			if (e_n > 0) {
+				float imbalance = e_n > 0 ? (float)(e_max - e_min) / (e_total / e_n) * 100 : 0;
+				printf("  exec: min=%d max=%d avg=%.1f imbalance=%.0f%%\n",
+				       e_min, e_max, (float)e_total / e_n, imbalance);
+			}
+		}
 	}
 	if (total > 0)
 		printf("-- total events: %lu --\n\n", total);
