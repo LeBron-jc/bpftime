@@ -1,188 +1,142 @@
-# bpftime: Userspace eBPF runtime for Observability, Network, GPU & General extensions Framework
+# bpftime：用户态 eBPF 运行时 — GPU Kernel 可观测性增强
 
-[![Build and Test VM](https://github.com/eunomia-bpf/bpftime/actions/workflows/test-vm.yml/badge.svg)](https://github.com/eunomia-bpf/bpftime/actions/workflows/test-vm.yml)
-[![Build and test runtime](https://github.com/eunomia-bpf/bpftime/actions/workflows/test-runtime.yml/badge.svg)](https://github.com/eunomia-bpf/bpftime/actions/workflows/test-runtime.yml)
-[![DOI](https://zenodo.org/badge/676866666.svg)](https://doi.org/10.48550/arXiv.2311.07923)
+基于 bpftime 构建的 GPU 算子→Kernel→Warp 三层可观测性系统，实现从 CPU 端算子名到 GPU 内部每个 warp 执行时间的完整追踪链。
 
-`bpftime` is a High-Performance userspace eBPF runtime and General Extension Framework designed for userspace. It enables faster Uprobe, USDT, Syscall hooks, XDP, and more event sources by bypassing the kernel and utilizing an optimized compiler like `LLVM`.
-
-📦 [Key Features](#key-features) \
-🔨 [Quick Start](#quick-start) \
-🔌 [Examples & Use Cases](#examples--use-cases) \
-⌨️ [Linux Plumbers 23 talk](https://lpc.events/event/17/contributions/1639/) \
-📖 [Slides](https://eunomia.dev/bpftime/documents/userspace-ebpf-bpftime-lpc.pdf) \
-📚 [OSDI '25 Paper](https://www.usenix.org/conference/osdi25/presentation/zheng-yusheng)
-
-[**Checkout our documents in eunomia.dev**](https://eunomia.dev/bpftime/) and [Deepwiki](https://deepwiki.com/eunomia-bpf/bpftime)!
-
-bpftime is not `userspace eBPF VM`, it's a userspace runtime framework includes everything to run eBPF in userspace: `loader`, `verifier`, `helpers`, `maps`, `ufunc` and multiple `events` such as Observability, Network, Policy or Access Control. It has multiple VM backend options support. For eBPF VM only, please see [llvmbpf](https://github.com/eunomia-bpf/llvmbpf).
-
-## Why bpftime? What's the design Goal?
-
-- **Performance Gains**: Achieve better performance by `bypassing the kernel` (e.g., via `Userspace DBI` or `Network Drivers`), with more configurable, optimized and more arch supported JIT/AOT options like `LLVM`, while maintaining compatibility with Linux kernel eBPF.
-- **Cross-Platform Compatibility**: Enables `eBPF functionality and large ecosystem` where kernel eBPF is unavailable, such as on older or alternative operating systems, or where kernel-level permissions are restricted, without changing your tool.
-- **Flexible and General Extension Language & Runtime for Innovation**: eBPF is designed for innovation, evolving into a General Extension Language & Runtime in production that supports very diverse use cases. `bpftime`'s modular design allows easy integration as a library for adding new events and program types without touching kernel. Wishing it could enable rapid prototyping and exploration of new features!
-
-## Key Features
-
-- **Dynamic Binary rewriting**: Run eBPF programs in userspace, attaching them to `Uprobes`, `Syscall tracepoints` and inside `GPU` kernel: **No manual instrumentation or restart required!**. It can `trace` or `change` the execution of a function, `hook` or `filter` all syscalls of a process safely, and efficiently with an eBPF userspace runtime. Can inject eBPF runtime into any running process without the need for a restart or manual recompilation.
-- **Performance**: Experience up to a `10x` speedup in Uprobe overhead compared to kernel uprobe and uretprobe， up to a 10x faster than `NVbit`. Read/Write userspace memory is also faster than kernel eBPF.
-- **Interprocess eBPF Maps**: Implement userspace `eBPF maps` in shared userspace memory for summary aggregation or control plane communication.
-- **Compatibility**: use `existing eBPF toolchains` like clang, libbpf and bpftrace to develop userspace eBPF application without any modifications. Supporting CO-RE via BTF, and offering userspace `ufunc` access.
-- **Multi JIT Support**: Support [llvmbpf](https://github.com/eunomia-bpf/llvmbpf), a high-speed `JIT/AOT` compiler powered by LLVM, or using `ubpf JIT` and INTERPRETER. The vm can be built as `a standalone library` like ubpf.
-- **Run with kernel eBPF**: Can load userspace eBPF from kernel, and using kernel eBPF maps to cooperate with kernel eBPF programs like kprobes and network filters.
-- **Integrate with AF_XDP or DPDK**: Run your `XDP` network applications with better performance in userspace just like in kernel!(experimental)
-
-## Components
-
-- [`vm`](https://github.com/eunomia-bpf/bpftime/tree/master/vm): The eBPF VM and JIT compiler for bpftime, you can choose from [bpftime LLVM JIT/AOT compiler](https://github.com/eunomia-bpf/llvmbpf) and [ubpf](https://github.com/iovisor/ubpf). The [llvm-based vm](https://github.com/eunomia-bpf/llvmbpf) in bpftime can also be built as a standalone library and integrated into other projects, similar to ubpf.
-- [`runtime`](https://github.com/eunomia-bpf/bpftime/tree/master/runtime): The userspace runtime for eBPF, including the maps, helpers, ufuncs and other runtime safety features.
-- [`Attach events`](https://github.com/eunomia-bpf/bpftime/tree/master/attach): support attaching eBPF programs to `Uprobes`, `Syscall tracepoints`, `XDP` and other events with bpf_link, and also the driver event sources.
-- [`verifier`](https://github.com/eunomia-bpf/bpftime/tree/master/bpftime-verifier): Support using [PREVAIL](https://github.com/vbpf/ebpf-verifier) as userspace verifier, or using `Linux kernel verifier` for better results.
-- [`Loader`](https://github.com/eunomia-bpf/bpftime/tree/master/runtime/syscall-server): Includes a `LD_PRELOAD` loader library in userspace can work with current eBPF toolchain and library without involving any kernel, Another option is [daemon](https://github.com/eunomia-bpf/bpftime/tree/master/daemon) when Linux eBPF is available.
-
-## Quick Start: Uprobe
-
-With `bpftime`, you can build eBPF applications using familiar tools like clang and libbpf, and execute them in userspace. For instance, the [`malloc`](https://github.com/eunomia-bpf/bpftime/tree/master/example/malloc) eBPF program traces malloc calls using uprobe and aggregates the counts using a hash map.
-
-You can refer to [eunomia.dev/bpftime/documents/build-and-test](https://eunomia.dev/bpftime/documents/build-and-test) or the `installation.md` in the repo for how to build the project. Or You can using the container images from [GitHub packages](https://github.com/eunomia-bpf/bpftime/pkgs/container/bpftime).
-
-To get started, you can build and run a libbpf based eBPF program starts with `bpftime` cli:
-
-```console
-make -C example/malloc # Build the eBPF program example
-export PATH=$PATH:~/.bpftime/
-bpftime load ./example/malloc/malloc
+```
+PyTorch 算子              →  CUDA Kernel           →  Warp 耗时分布
+at::native::matmul_out →  vectorAdd               →  p50=2.2ms  p90=2.3ms  max=2.4ms
+at::native::relu_out   →  multiplyAdd             →  p50=2.9ms  p90=3.6ms  max=3.8ms
 ```
 
-In another shell, Run the target program with eBPF inside:
+## 原理
 
-```console
-$ bpftime start ./example/malloc/victim
-Hello malloc!
-malloc called from pid 250215
-continue malloc...
-malloc called from pid 250215
+### 总体架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Application Process                     │
+│                                                              │
+│  PyTorch/CUDA App ──▶ bpftime Agent ──▶ GPU Kernel          │
+│       │                    │                   │             │
+│       │  cudaLaunchKernel  │  PTX 注入        │ eBPF 探针   │
+│       ▼                    ▼                   ▼             │
+│   调用栈回溯           共享内存             Ring Buffer      │
+│   解析算子名           传输数据            记录时间戳        │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│                   bpftime Server Process                     │
+│                                                              │
+│   Launch Trace ──▶   算子→Kernel 映射                        │
+│   Ring Buffer   ──▶   Warp 耗时统计                          │
+│   kerneltiming  ──▶   per-second 输出 (percentile + 直方图)  │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-You should always run the `load` first then run the `start` command, or the eBPF program will not be attached.
+### 三层映射链
 
-You can also dynamically attach the eBPF program with a running process:
+**第一层：CPU 端算子名解析**
 
-```console
-$ ./example/malloc/victim & echo $! # The pid is 101771
-[1] 101771
-101771
-continue malloc...
-continue malloc...
+bpftime 通过 Frida 动态插桩 Hook `libcudart.so` 的 `cudaLaunchKernel`。每次 kernel 启动时，调用栈回溯（`backtrace` + `dladdr` + `__cxa_demangle`）解析出是哪个 C++ 函数触发了此次调用。匹配规则：demangled 符号名中包含 `at::native::` 或 `at::cuda::` 的帧即为算子名。
+
+```
+torch.mm(a, b)
+  → at::native::matmul_out()     ← 在这里被抓到
+    → cudaLaunchKernel(...)      ← bpftime 拦截点
 ```
 
-And attach to it:
+**第二层：GPU Kernel 注入 eBPF 探针**
 
-```console
-$ sudo bpftime attach 101771 # You may need to run make install in root
-Inject: "/root/.bpftime/libbpftime-agent.so"
-Successfully injected. ID: 1
+bpftime 拦截 CUDA fatbin 加载，将 eBPF 程序编译为 PTX 汇编码，通过 PTX Pass 注入到目标 kernel 的入口和出口。注入后的 kernel 在 GPU 上执行时会先运行 eBPF 探针，记录时间戳。
+
+**第三层：逐 Warp 耗时采集**
+
+eBPF 探针在 GPU 每个线程上记录纳秒级时间戳，通过 GPU Ring Buffer（共享内存零拷贝映射）传回 Host。Host 端每秒排空 ring buffer，配对 enter/exit 事件，计算每个 warp（32 线程一组）的执行时长。
+
+### 关键修改
+
+| 文件 | 修改 | 效果 |
+|------|------|------|
+| `nv_attach_impl_frida_setup.cpp` | `resolve_pytorch_caller_from_backtrace` 增加 `__cxa_demangle` | 修复算子名解析 bug（原版用 mangled name 搜索永远不会匹配） |
+| `nv_gpu_ringbuf_map.cpp` | `drain_data` 中 `dirty` 检查从 `return 0` 改为 `continue` + `while` 排空 | 修复脏页锁死 bug（一个线程写入时阻塞全部数据读取），吞吐从 17% → 100% |
+| `kerneltiming.bpf.c` | value_type 从 1024B 改为 event struct (72B) | 每线程 ringbuf 容量提升 14 倍 |
+| `kerneltiming.c` | 复合 key（算子名,kernel名）、p50/p90/p99、未排序直方图 | 支持多算子共享 kernel 的独立追踪，输出维度更丰富 |
+
+### 对比
+
+| 指标 | bpftime 原版 | 修改后 |
+|------|-------------|--------|
+| Ringbuf 事件捕获率 | ~17% | ~100% |
+| 算子名解析 | 不工作（bug） | 正常 |
+| 多算子共享 kernel | 不支持 | 支持 |
+| 输出维度 | avg/min/max | p50/p90/p99 + 直方图 |
+| 支持的 kernel 数 | 2 | 3+（可扩展） |
+
+## 快速开始
+
+### 编译
+
+```bash
+git clone --recursive https://github.com/LeBron-jc/bpftime.git
+cd bpftime
+
+# 启用 CUDA 支持
+cmake -Bbuild -DBPFTIME_ENABLE_CUDA_ATTACH=ON -DBPFTIME_CUDA_ROOT=/usr/local/cuda
+cmake --build build -j$(nproc)
+
+# 编译 kerneltiming 示例
+make -C example/gpu/kerneltiming
 ```
 
-You can see the output from original program:
+### 运行
 
-```console
-$ bpftime load ./example/malloc/malloc
-...
-12:44:35 
-        pid=247299      malloc calls: 10
-        pid=247322      malloc calls: 10
+**终端 1（eBPF 服务端）：**
+```bash
+BPFTIME_LOG_OUTPUT=console \
+  LD_PRELOAD=build/runtime/syscall-server/libbpftime-syscall-server.so \
+  example/gpu/kerneltiming/kerneltiming
 ```
 
-Alternatively, you can also run our sample eBPF program directly in the kernel eBPF, to see the similar output. This can be an example of how bpftime can work compatibly with kernel eBPF.
-
-```console
-$ sudo example/malloc/malloc
-15:38:05
-        pid=30415       malloc calls: 1079
-        pid=30393       malloc calls: 203
-        pid=29882       malloc calls: 1076
-        pid=34809       malloc calls: 8
+**终端 2（GPU 应用 — 算子→kernel 演示）：**
+```bash
+BPFTIME_LOG_OUTPUT=console \
+  LD_PRELOAD=build/runtime/agent/libbpftime-agent.so \
+  example/gpu/kerneltiming/torch_ops
 ```
 
-See [eunomia.dev/bpftime/documents/usage](https://eunomia.dev/bpftime/documents/usage) for more details.
+### 输出示例
 
-## Examples & Use Cases
-
-For more examples and details, please refer to [eunomia.dev/bpftime/documents/examples/](https://eunomia.dev/bpftime/documents/examples/) webpage and [example](https://github.com/eunomia-bpf/bpftime/tree/master/example/) dir.
-
-## In-Depth
-
-### **How it Works**
-
-bpftime supports two modes:
-
-#### Running in userspace only
-
-Left: original kernel eBPF | Right: bpftime
-
-![How it works](https://eunomia.dev/bpftime/documents/bpftime.png)
-
-In this mode, bpftime can run eBPF programs in userspace without kernel, so it can be ported into low version of Linux or even other systems, and running without root permissions. It relies on a [userspace verifier](https://github.com/vbpf/ebpf-verifier) to ensure the safety of eBPF programs.
-
-#### Run with kernel eBPF
-
-![documents/bpftime-kernel.png](https://eunomia.dev/bpftime/documents/bpftime-kernel.png)
-
-In this mode, bpftime can run together with kernel eBPF. It can load eBPF programs from kernel, and using kernel eBPF maps to cooperate with kernel eBPF programs like kprobes and network filters.
-
-#### Instrumentation implementation
-
-Current hook implementation is based on binary rewriting and the underly technique is inspired by:
-
-- Userspace function hook: [frida-gum](https://github.com/frida/frida-gum)
-- Syscall hooks: [zpoline](https://www.usenix.org/conference/atc23/presentation/yasukata) and [pmem/syscall_intercept](https://github.com/pmem/syscall_intercept).
-- GPU hooks: our new implementation by converting eBPF into PTX and injecting into GPU kernels. See [attach/nv_attach_impl](https://github.com/eunomia-bpf/bpftime/tree/master/attach/nv_attach_impl) for more details.
-- XDP with DPDK. See the [uXDP paper](https://dl.acm.org/doi/10.1145/3748355.3748360) for more details.
-
-The hook can be easily replaced with other DBI methods or frameworks, to make it a general extension framework. See our OSDI '25 paper [Extending Applications Safely and Efficiently](https://www.usenix.org/conference/osdi25/presentation/zheng-yusheng) for details.
-
-### **Performance Benchmarks**
-
-see [github.com/eunomia-bpf/bpf-benchmark](https://github.com/eunomia-bpf/bpf-benchmark) for how we evaluate and details.
-
-### Comparing with Kernel eBPF Runtime
-
-- `bpftime` allows you to use `clang` and `libbpf` to build eBPF programs, and run them directly in this runtime, just like normal kernel eBPF. We have tested it with a libbpf version in [third_party/libbpf](https://github.com/eunomia-bpf/bpftime/tree/master/third_party/libbpf). No specify libbpf or clang version needed.
-- Some kernel helpers and kfuncs may not be available in userspace.
-- It does not support direct access to kernel data structures or functions like `task_struct`.
-
-Refer to [eunomia.dev/bpftime/documents/available-features](https://eunomia.dev/bpftime/documents/available-features) for more details.
-
-## Build and test
-
-See [eunomia.dev/bpftime/documents/build-and-test](https://eunomia.dev/bpftime/documents/build-and-test) for details.
-
-## License
-
-This project is licensed under the MIT License.
-
-## Contact and citations
-
-Have any questions or suggestions on future development? Feel free to open an issue or contact
-<yunwei356@gmail.com> !
-
-Our OSDI '25 paper: <https://www.usenix.org/conference/osdi25/presentation/zheng-yusheng>
-
-```txt
-@inproceedings{zheng2025extending,
-  title={Extending Applications Safely and Efficiently},
-  author={Zheng, Yusheng and Yu, Tong and Yang, Yiwei and Hu, Yanpeng and Lai, Xiaozheng and Williams, Dan and Quinn, Andi},
-  booktitle={19th USENIX Symposium on Operating Systems Design and Implementation (OSDI 25)},
-  pages={557--574},
-  year={2025}
-}
+```
+==== at::native::matmul_out(float const*, float const*, float*) -> vectorAdd <<<(4,1,1),(256,1,1)>>> ====
+  warps=32  p50=2.2ms  p90=2.3ms  p99=2.4ms  max=2.4ms
+  ####%+*#+*+%+.=+****-+**#@#%###%  1.5..2.4ms
+==== at::native::matmul_out(float const*, float const*, float*) -> multiplyAdd <<<(4,1,1),(256,1,1)>>> ====
+  warps=32  p50=2.9ms  p90=3.6ms  p99=3.7ms  max=3.8ms
+  %=%-%=#=%=#+#=%.=+=+*+*+-=#+.+.+  1.8..3.8ms
+==== at::native::relu_out(float*) -> relu <<<(4,1,1),(256,1,1)>>> ====
+  warps=32  p50=2.6ms  p90=3.9ms  p99=4.0ms  max=4.0ms
+  +:+-=.=-=-+-+:+-%-%-%-%-%-%:+-#-  1.5..4.0ms
+-- total events: 5120 --
 ```
 
-## Acknowledgement
+- **标题**：`算子名 → kernel名 <<<(grid),(block)>>>`
+- **warps=32**：全部 32 个 warp（1024 线程）无损捕获
+- **p50/p90/p99**：warp 耗时百分位数
+- **直方图**：32 个字符，每个对应一个 warp（未排序，按 warp ID 原始顺序），`.` 最快 `#%@` 最慢
+- **total events**：每秒 enter+exit 配对事件总数
 
-eunomia-bpf community is sponsored by [PLCT Lab](https://plctlab.github.io/) from [ISCAS](http://english.is.cas.cn/au/).
+## 文件说明
 
-Thanks for other sponsors and discussions help building this project: [Prof. Marios Kogias](https://marioskogias.github.io/) from Imperial College London, [Prof. Xiaozheng lai](https://www2.scut.edu.cn/cs/2017/0129/c22285a327654/page.htm) from SCUT, [Prof lijun chen](http://www.xiyou.edu.cn/info/2394/67845.htm) from XUPT,
-[Prof. Qi Li](https://sites.google.com/site/qili2012/) from THU [NISL Lab](https://netsec.ccert.edu.cn/en/), and Linux eBPF maintainers in the LPC 23 eBPF track.
+| 文件 | 用途 |
+|------|------|
+| `example/gpu/kerneltiming/kerneltiming.bpf.c` | eBPF 探针程序：注入到 GPU kernel 入口/出口 |
+| `example/gpu/kerneltiming/kerneltiming.c` | Host 端：轮询 ringbuf、配对 enter/exit、输出统计 |
+| `example/gpu/kerneltiming/torch_ops.cu` | 算子→kernel 演示程序（3 算子 × 3 kernel） |
+| `example/gpu/kerneltiming/vec_add.cu` | 简易 CUDA 测试（无算子层） |
+| `attach/nv_attach_impl/nv_attach_impl_frida_setup.cpp` | 算子名解析、cudaLaunchKernel Hook |
+| `runtime/src/bpf_map/gpu/nv_gpu_ringbuf_map.cpp` | GPU Ring Buffer 实现（Producer/Consumer） |
+
+## 疑难解答
+
+- **段错误 / 共享内存报错**：`rm -f /dev/shm/bpftime_*`
+- **CUDA 初始化 error 999**（休眠后常见）：`sudo rmmod nvidia_uvm && sudo modprobe nvidia_uvm`
+- **算子名不显示**：确保 client 程序有用 `at::native::` C++ namespace 包裹的调用，或使用真实 PyTorch
